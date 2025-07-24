@@ -17,7 +17,7 @@
 
 #include <chrono>
 
-bool DEBUG = true;
+bool DEBUG = false;
 
 void generateDAG(const Graph &graph, deviceGraphPointers &deviceGraph,
                  deviceDAGpointer &deviceDAG, vector<ui> listingOrder) {
@@ -1385,6 +1385,7 @@ int main(int argc, const char *argv[]) {
     chkerr(cudaMemcpy(cc, cliqueCount, (graph.kmax + 1) * sizeof(ui),
                       cudaMemcpyDeviceToHost));
 
+
     coreTotalCliques = totalCliques;
     maxCore = 0;
     maxDensity = static_cast<double>(coreTotalCliques) / graph.n;
@@ -1404,7 +1405,7 @@ int main(int argc, const char *argv[]) {
       ui count = thrust::count_if(dev_ptr, dev_ptr + graph.n, predicate);
       // cout << "Count " << count << endl;
       coreSize.push_back(count);
-
+      
       coreTotalCliques = coreTotalCliques - cc[i - 1];
       currentMax = static_cast<double>(coreTotalCliques) / count;
       // coreSize.push_back(count);
@@ -1473,7 +1474,7 @@ int main(int argc, const char *argv[]) {
 
   cout << "k prime " << k_prime << endl;
 
-  cout << "core ar size " << coreSize.size() << endl;
+  cout<<"core ar size "<<coreSize.size()<<endl;
 
   ui coresize = coreSize[k_prime];
 

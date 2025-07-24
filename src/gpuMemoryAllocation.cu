@@ -67,9 +67,10 @@ ui memoryAllocationlevelData(cliqueLevelDataPointer &L, ui k, ui pSize,
                     candidateSize * sizeof(ui)));
   chkerr(cudaMalloc((void **)&(L.candidates), candidateSize * sizeof(ui)));
 
-  chkerr(
-      cudaMalloc((void **)&(L.validNeighMaskPartition), maskSize * sizeof(ui)));
-  chkerr(cudaMalloc((void **)&(L.validNeighMask), maskSize * sizeof(ui)));
+  chkerr(cudaMalloc((void **)&(L.validNeighMaskPartition),
+                    maskSize * sizeof(ui)));
+  chkerr(cudaMalloc((void **)&(L.validNeighMask),
+                    maskSize * sizeof(ui)));
 
   chkerr(cudaMemset(L.validNeighMask, 0, maskSize * sizeof(ui)));
   chkerr(cudaMemset(L.validNeighMaskPartition, 0, maskSize * sizeof(ui)));
@@ -91,6 +92,7 @@ ui memoryAllocationlevelData(cliqueLevelDataPointer &L, ui k, ui pSize,
   cudaDeviceSynchronize();
   return maxBitMask;
 }
+
 
 void memoryAllocationDensestCore(densestCorePointer &C, ui n, ui density,
                                  ui totalCliques, ui graphsize) {
