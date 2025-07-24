@@ -117,9 +117,9 @@ ui listAllCliques(const Graph &graph, deviceGraphPointers &deviceGraph,
   // labels used to avoid duplicates.
   ui *labels;
   size_t numBits = static_cast<size_t>(graph.n) * TOTAL_WARPS;
-  size_t numBytes = (numBits + 7) / 8;
-  chkerr(cudaMalloc((void **)&(labels), (numBytes)));
-  cudaMemset(labels, 0, numBytes);
+  size_t numWords = (numBits + 31) / 32;  // Round up to word boundary for 32-bit operations
+  chkerr(cudaMalloc((void **)&(labels), numWords * sizeof(ui)));
+  cudaMemset(labels, 0, numWords * sizeof(ui));
   // thrust::device_ptr<ui> dev_labels(labels);
   // thrust::fill(dev_labels, dev_labels + total_size, iterK);
 
