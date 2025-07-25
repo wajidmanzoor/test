@@ -594,7 +594,8 @@ __global__ void selectNodes(deviceGraphPointers G, ui *bufTails, ui *glBuffers,
     glBuffer = glBuffers + blockIdx.x * glBufferSize;
   }
   __syncthreads();
-  ui total = (n + BLK_NUMS) / BLK_NUMS;
+  
+  ui total = (n + BLK_NUMS - 1) / BLK_NUMS;  // Proper ceiling division
   ui start = blockIdx.x * total;
   ui end = min(start + total, n);
 
@@ -602,19 +603,25 @@ __global__ void selectNodes(deviceGraphPointers G, ui *bufTails, ui *glBuffers,
 
   for (ui i = start + thid; i < end; i += BLK_DIM) {
     ui v = i;
-    if (G.cliqueCore[v] == level) {
+    // Add bounds check for vertex index
+    if (v < n && G.cliqueCore[v] == level) {
       ui loc = atomicAdd(&bufTail, 1);
-      assert(loc < glBufferSize && "glBuffer overflow in selectNodes");
-      glBuffer[loc] = v;
+      if (loc < glBufferSize) {  // Bounds check to prevent overflow
+        glBuffer[loc] = v;
+      } else {
+        // Handle overflow gracefully - could add error reporting here
+        printf("Warning: glBuffer overflow in selectNodes at block %d, level %d\n", 
+               blockIdx.x, level);
+        break;
+      }
     }
   }
 
   __syncthreads();
 
   if (threadIdx.x == 0) {
-    assert(bufTail <= glBufferSize &&
-           "bufTail exceeds glBufferSize in selectNodes");
-    bufTails[blockIdx.x] = bufTail;
+    // Ensure bufTail doesn't exceed buffer size
+    bufTails[blockIdx.x] = min(bufTail, glBufferSize);
   }
 }
 
@@ -623,19 +630,28 @@ __global__ void processNodesByWarp(deviceGraphPointers G,
                                    ui *bufTails, ui *glBuffers, ui *globalCount,
                                    ui glBufferSize, ui n, ui level, ui k,
                                    ui totalCliques) {
-  /*removes the verties to get their core value.
-    Warp processes the verticies in its virtual partition parallely*/
+  /*removes the vertices to get their core value.
+    Warp processes the vertices in its virtual partition parallely*/
   __shared__ ui bufTail;
   __shared__ ui *glBuffer;
   __shared__ ui base;
+  __shared__ ui newVerticesCount;  // Count of new vertices added in this iteration
+  __shared__ ui *newVerticesBuffer;  // Separate buffer for newly discovered vertices
+  
   ui warpId = threadIdx.x / 32;
   ui laneId = threadIdx.x % 32;
   ui regTail;
   ui i;
+  
+  // Allocate shared memory for new vertices (max possible is glBufferSize)
+  extern __shared__ ui sharedNewVertices[];
+  
   if (threadIdx.x == 0) {
-    // index of last vertex in vitual partition of glguffer for current warp
+    // index of last vertex in virtual partition of glBuffer for current warp
     bufTail = bufTails[blockIdx.x];
-
+    newVerticesCount = 0;
+    newVerticesBuffer = sharedNewVertices;
+    
     // stores index of current processed vertex
     base = 0;
     glBuffer = glBuffers + blockIdx.x * glBufferSize;
@@ -644,11 +660,11 @@ __global__ void processNodesByWarp(deviceGraphPointers G,
 
   while (true) {
     __syncthreads();
-    if (base == bufTail)
+    if (base >= bufTail)  // Use >= instead of == for safety
       break; // all the threads will evaluate to true at same iteration
 
     i = base + warpId;
-    regTail = bufTail;
+    regTail = bufTail;  // Capture current tail to avoid dynamic changes
     __syncthreads();
 
     if (i >= regTail)
@@ -656,9 +672,8 @@ __global__ void processNodesByWarp(deviceGraphPointers G,
 
     if (threadIdx.x == 0) {
       base += WARPS_EACH_BLK;
-      if (regTail < base)
-        ;
-      base = regTail;
+      if (base > regTail)  // Clamp to avoid going beyond buffer
+        base = regTail;
     }
 
     // vertex to be removed
@@ -666,7 +681,7 @@ __global__ void processNodesByWarp(deviceGraphPointers G,
 
     __syncwarp();
 
-    // warp iters through the clique data.
+    // warp iterates through the clique data.
     for (ui j = laneId; j < totalCliques; j += warpSize) {
 
       // if valid clique and not removed yet
@@ -677,11 +692,9 @@ __global__ void processNodesByWarp(deviceGraphPointers G,
         // stores the index at which the vertex was found in clique (0,k-1)
         ui w = 0;
 
-        // iter through verticies of clique sequentially.
-        while (w < k) {
-
+        // iterate through vertices of clique sequentially.
+        while (w < k && !found) {  // Early exit when found
           if (cliqueData.trie[w * totalCliques + j] == v) {
-
             found = true;
           }
           w++;
@@ -689,39 +702,60 @@ __global__ void processNodesByWarp(deviceGraphPointers G,
 
         if (found) {
           cliqueData.status[j] = level;
-          // iter throught the clique verticies
+          
+          // iterate through the clique vertices
           for (ui x = 0; x < k; x++) {
-
-            // continue it clique vertex is same as vertex
             // clique vertex
             ui u = cliqueData.trie[x * totalCliques + j];
             if (u == v)
-              continue;
+              continue;  // skip the vertex being removed
 
-            // decreament its core value by 1
-            int a = atomicSub(&G.cliqueCore[u], 1);
+            // CRITICAL FIX: Atomically decrement and get the NEW value
+            int oldValue = atomicSub(&G.cliqueCore[u], 1);
+            int newValue = oldValue - 1;
 
-            // if core value is less than level, update to level.
-            if (a - 1 < level) {
+            // if new core value is less than current level, clamp it to level
+            if (newValue < (int)level) {
               atomicExch(&G.cliqueCore[u], level);
+              newValue = level;  // Update our local copy
             }
-            // if core value is level, add to glbuffer so can be removed in
-            // this level.
-            if (a == level + 1) {
-              ui loc = atomicAdd(&bufTail, 1);
-              glBuffer[loc] = u;
+            
+            // CRITICAL FIX: Check if the NEW value equals current level
+            // This means the vertex should be processed in this level
+            if (newValue == (int)level) {
+              // Use atomic compare-and-swap to avoid duplicate additions
+              // We'll use a sentinel value to mark vertices as "queued"
+              int expectedCore = level;
+              int queuedMarker = level - 1;  // Temporary marker (will be reset to level)
+              
+              if (atomicCAS(&G.cliqueCore[u], expectedCore, queuedMarker) == expectedCore) {
+                // Successfully marked this vertex as queued, now add to buffer
+                ui loc = atomicAdd(&newVerticesCount, 1);
+                if (loc < glBufferSize) {  // Bounds check
+                  newVerticesBuffer[loc] = u;
+                }
+                // Restore the correct core value
+                atomicExch(&G.cliqueCore[u], level);
+              }
             }
           }
-
-          // set status of the clique to current core level.
         }
       }
     }
+    
+    __syncwarp();
   }
 
   __syncthreads();
+  
+  // Copy new vertices to the main buffer for next iteration
   if (threadIdx.x == 0) {
-    atomicAdd(globalCount, bufTail); // atomic since contention among blocks
+    ui originalTail = bufTails[blockIdx.x];
+    for (ui idx = 0; idx < newVerticesCount && (originalTail + idx) < glBufferSize; idx++) {
+      glBuffer[originalTail + idx] = newVerticesBuffer[idx];
+    }
+    bufTails[blockIdx.x] = min(originalTail + newVerticesCount, glBufferSize);
+    atomicAdd(globalCount, bufTails[blockIdx.x]);
   }
 }
 

@@ -337,15 +337,15 @@ void cliqueCoreDecompose(const Graph &graph, deviceGraphPointers &deviceGraph,
   ui *bufTails = NULL;
   ui *glBuffers = NULL;
 
-  // Total verticies that are removed.
+  // Total vertices that are removed.
   chkerr(cudaMalloc((void **)&(globalCount), sizeof(ui)));
 
-  // stores the verticies that need to be removed in peeling algo.
-  // Each warp stores in its virtual partition
+  // stores the vertices that need to be removed in peeling algo.
+  // Each block stores in its virtual partition
   chkerr(
       cudaMalloc((void **)&(glBuffers), BLK_NUMS * glBufferSize * sizeof(ui)));
 
-  // stores the end index of verticies in glBuffer for each warp
+  // stores the end index of vertices in glBuffer for each block
   chkerr(cudaMalloc((void **)&(bufTails), BLK_NUMS * sizeof(ui)));
   chkerr(cudaMemset(globalCount, 0, sizeof(ui)));
   cudaDeviceSynchronize();
@@ -354,66 +354,100 @@ void cliqueCoreDecompose(const Graph &graph, deviceGraphPointers &deviceGraph,
   chkerr(cudaMemcpy(deviceGraph.cliqueCore, deviceGraph.cliqueDegree,
                     graph.n * sizeof(ui), cudaMemcpyDeviceToDevice));
 
-  // total cliques yet to be removed
+  // INITIAL DENSITY CALCULATION (0-core includes all vertices and cliques)
   thrust::device_ptr<int> dev_ptr(cliqueData.status);
   ui currentCliques = thrust::count(dev_ptr, dev_ptr + totalCliques, -1);
 
-  double currentDensity =
-      static_cast<double>(currentCliques) / (graph.n - count);
+  double currentDensity = static_cast<double>(currentCliques) / graph.n;
 
   maxDensity = currentDensity;
-  maxCore = 0;
+  maxCore = 0;  // 0-core includes all vertices
   coreTotalCliques = currentCliques;
   coreSize.push_back(graph.n);
 
-  while (count < graph.n) {
-    cudaMemset(bufTails, 0, sizeof(ui) * BLK_NUMS);
+  if (DEBUG) {
+    printf("Initial: Level=0, Vertices=%u, Cliques=%u, Density=%.6f\n", 
+           graph.n, currentCliques, currentDensity);
+  }
 
-    // Select nodes whoes current degree is level, that means they should be
-    // removed as part of the level core
+  while (count < graph.n) {
+    chkerr(cudaMemset(bufTails, 0, sizeof(ui) * BLK_NUMS));
+    chkerr(cudaMemset(globalCount, 0, sizeof(ui)));
+
+    // Select nodes whose current clique core is exactly 'level'
+    // These should be removed as part of the level-core peeling
     selectNodes<<<BLK_NUMS, BLK_DIM>>>(deviceGraph, bufTails, glBuffers,
                                        glBufferSize, graph.n, level);
     cudaDeviceSynchronize();
     CUDA_CHECK_ERROR("Select Node Core Decompose");
 
-    // Total number of verticies in buffer
-    /*thrust::device_vector<ui> dev_vec1(bufTails, bufTails + BLK_NUMS);
-    ui sum = thrust::reduce(dev_vec1.begin(), dev_vec1.end(), 0,
-    thrust::plus<ui>()); cudaDeviceSynchronize();*/
-    // TODO: ADD logic to switch between warp and block
+    // Check if any vertices were selected for removal
+    thrust::device_vector<ui> dev_vec1(bufTails, bufTails + BLK_NUMS);
+    ui selectedVertices = thrust::reduce(dev_vec1.begin(), dev_vec1.end(), 0, thrust::plus<ui>());
+    
+    if (selectedVertices == 0) {
+      // No vertices to remove at this level, move to next level
+      level++;
+      continue;
+    }
 
-    // Remove the verticies whose core value is current level and update clique
-    // degrees
-    processNodesByWarp<<<BLK_NUMS, BLK_DIM>>>(
+    // Remove the vertices whose core value is current level and update clique degrees
+    // Use shared memory for the new vertices buffer
+    size_t sharedMemSize = glBufferSize * sizeof(ui);
+    processNodesByWarp<<<BLK_NUMS, BLK_DIM, sharedMemSize>>>(
         deviceGraph, cliqueData, bufTails, glBuffers, globalCount, glBufferSize,
         graph.n, level, k, totalCliques);
     cudaDeviceSynchronize();
     CUDA_CHECK_ERROR("Process Node Core Decompose");
 
-    // update the total verticies that are removed
-    chkerr(cudaMemcpy(&count, globalCount, sizeof(unsigned int),
+    // update the total vertices that are removed
+    ui newCount;
+    chkerr(cudaMemcpy(&newCount, globalCount, sizeof(unsigned int),
                       cudaMemcpyDeviceToHost));
 
-    level++;
-    thrust::device_ptr<int> dev_ptr(cliqueData.status);
-
-    // get the density of current core
-    if ((graph.n - count) != 0) {
+    // CRITICAL FIX: Calculate density BEFORE incrementing level
+    // After removing vertices with core value 'level', the remaining graph
+    // represents the (level+1)-core
+    ui remainingVertices = graph.n - newCount;
+    
+    if (remainingVertices > 0) {
+      // Count remaining active cliques
+      thrust::device_ptr<int> dev_ptr(cliqueData.status);
       currentCliques = thrust::count(dev_ptr, dev_ptr + totalCliques, -1);
-
-      currentDensity = static_cast<double>(currentCliques) / (graph.n - count);
-
-      // update max density
+      
+      currentDensity = static_cast<double>(currentCliques) / remainingVertices;
+      
+      if (DEBUG) {
+        printf("After Level=%u: Vertices=%u, Cliques=%u, Density=%.6f\n", 
+               level, remainingVertices, currentCliques, currentDensity);
+      }
+      
+      // CRITICAL FIX: The remaining graph represents (level+1)-core
+      // Update max density if this core is denser
       if (currentDensity >= maxDensity) {
         maxDensity = currentDensity;
-        maxCore = level;
+        maxCore = level + 1;  // Correct: remaining vertices form (level+1)-core
         coreTotalCliques = currentCliques;
       }
-      coreSize.push_back(graph.n - count);
+      
+      coreSize.push_back(remainingVertices);
+    } else {
+      // All vertices removed
+      if (DEBUG) {
+        printf("All vertices removed at level %u\n", level);
+      }
+      break;
     }
-
-    cudaDeviceSynchronize();
+    
+    count = newCount;
+    level++;  // Increment level AFTER density calculation
   }
+
+  if (DEBUG) {
+    printf("Final Result: MaxCore=%u, MaxDensity=%.6f, CoreSize=%u, TotalCliques=%u\n",
+           maxCore, maxDensity, (maxCore < coreSize.size() ? coreSize[maxCore] : 0), coreTotalCliques);
+  }
+
   cudaFree(globalCount);
   cudaFree(bufTails);
   cudaFree(glBuffers);
