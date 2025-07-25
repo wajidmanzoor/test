@@ -117,11 +117,15 @@ ui listAllCliques(const Graph &graph, deviceGraphPointers &deviceGraph,
   // labels used to avoid duplicates.
   ui *labels;
   size_t numBits = static_cast<size_t>(graph.n) * TOTAL_WARPS;
-  size_t numBytes = (numBits + 7) / 8;
+  /*size_t numBytes = (numBits + 7) / 8;
   chkerr(cudaMalloc((void **)&(labels), (numBytes)));
-  cudaMemset(labels, 0, numBytes);
+  cudaMemset(labels, 0, numBytes);*/
   // thrust::device_ptr<ui> dev_labels(labels);
   // thrust::fill(dev_labels, dev_labels + total_size, iterK);
+  size_t numWords =
+      (numBits + 31) / 32; // Round up to word boundary for 32-bit operations
+  chkerr(cudaMalloc((void **)&(labels), numWords * sizeof(ui)));
+  cudaMemset(labels, 0, numWords * sizeof(ui));
 
   chkerr(cudaMemcpy(deviceGraph.degree, graph.degree.data(),
                     graph.n * sizeof(ui), cudaMemcpyHostToDevice));
@@ -180,7 +184,7 @@ ui listAllCliques(const Graph &graph, deviceGraphPointers &deviceGraph,
 
     // thrust::device_ptr<ui> dev_labels(labels);
     // thrust::fill(dev_labels, dev_labels + graph.n * TOTAL_WARPS, iterK);
-    cudaMemset(labels, 0, numBytes);
+    cudaMemset(labels, 0, numWords * sizeof(ui));
 
     chkerr(cudaMemset(levelData.count, 0, (TOTAL_WARPS + 1) * sizeof(ui)));
     chkerr(cudaMemset(levelData.temp, 0, (TOTAL_WARPS + 1) * sizeof(ui)));
@@ -191,8 +195,8 @@ ui listAllCliques(const Graph &graph, deviceGraphPointers &deviceGraph,
 
     // Add verticies to partial cliques from initial kernel.
     listMidCliques<<<BLK_NUMS, BLK_DIM, sharedMemoryMid>>>(
-        deviceDAG, levelData, labels, k, iterK, graph.n, graph.m, pSize, cpSize,
-        maxBitMask, totalTasks, level, TOTAL_WARPS);
+        deviceDAG, levelData, labels, k, graph.n, pSize, cpSize, maxBitMask,
+        totalTasks, level, TOTAL_WARPS);
     cudaDeviceSynchronize();
 
     CUDA_CHECK_ERROR("Generate Mid Partial Cliques");
@@ -1385,7 +1389,6 @@ int main(int argc, const char *argv[]) {
     chkerr(cudaMemcpy(cc, cliqueCount, (graph.kmax + 1) * sizeof(ui),
                       cudaMemcpyDeviceToHost));
 
-
     coreTotalCliques = totalCliques;
     maxCore = 0;
     maxDensity = static_cast<double>(coreTotalCliques) / graph.n;
@@ -1405,7 +1408,7 @@ int main(int argc, const char *argv[]) {
       ui count = thrust::count_if(dev_ptr, dev_ptr + graph.n, predicate);
       // cout << "Count " << count << endl;
       coreSize.push_back(count);
-      
+
       coreTotalCliques = coreTotalCliques - cc[i - 1];
       currentMax = static_cast<double>(coreTotalCliques) / count;
       // coreSize.push_back(count);
@@ -1474,7 +1477,7 @@ int main(int argc, const char *argv[]) {
 
   cout << "k prime " << k_prime << endl;
 
-  cout<<"core ar size "<<coreSize.size()<<endl;
+  cout << "core ar size " << coreSize.size() << endl;
 
   ui coresize = coreSize[k_prime];
 

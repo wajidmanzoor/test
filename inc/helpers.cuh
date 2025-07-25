@@ -13,12 +13,8 @@ __global__ void listIntialCliques(deviceDAGpointer D,
                                   cliqueLevelDataPointer levelData, ui *label,
                                   ui k, ui n, ui psize, ui cpSize,
                                   ui maxBitMask, ui level, ui totalWarps,
-                                  size_t partialSize,
-                                  size_t candidateSize,
-                                  size_t maskSize,
-                                  size_t offsetSize);
-
-
+                                  size_t partialSize, size_t candidateSize,
+                                  size_t maskSize, size_t offsetSize);
 
 __global__ void flushParitions(deviceDAGpointer D,
                                cliqueLevelDataPointer levelData, ui pSize,
@@ -26,9 +22,8 @@ __global__ void flushParitions(deviceDAGpointer D,
                                ui totalWarps);
 __global__ void listMidCliques(deviceDAGpointer D,
                                cliqueLevelDataPointer levelData, ui *label,
-                               ui k, ui iterK, ui n, ui m, ui pSize, ui cpSize,
-                               ui maxBitMask, ui totalTasks, ui level,
-                               ui totalWarps);
+                               ui k, ui n, ui pSize, ui cpSize, ui maxBitMask,
+                               ui totalTasks, ui level, ui totalWarps);
 __global__ void writeFinalCliques(deviceGraphPointers G, deviceDAGpointer D,
                                   cliqueLevelDataPointer levelData,
                                   deviceCliquesPointer cliqueData,
@@ -133,5 +128,5 @@ __global__ void updateFlownetwork(deviceFlowNetworkPointers flowNetwork,
                                   deviceCliquesPointer finalCliqueData,
                                   ui *compCounter, double *upperBound,
                                   double *lowerBound, ui *gpuConverged,
-                                  ui *gpuSize, double *gpuMaxDensity, ui k, ui t,
-                                  ui iter);
+                                  ui *gpuSize, double *gpuMaxDensity, ui k,
+                                  ui t, ui iter);
