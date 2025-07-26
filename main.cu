@@ -392,9 +392,7 @@ void cliqueCoreDecompose(const Graph &graph, deviceGraphPointers &deviceGraph,
     }
 
     // Remove the vertices whose core value is current level and update clique degrees
-    // Use shared memory for the new vertices buffer
-    size_t sharedMemSize = glBufferSize * sizeof(ui);
-    processNodesByWarp<<<BLK_NUMS, BLK_DIM, sharedMemSize>>>(
+    processNodesByWarp<<<BLK_NUMS, BLK_DIM>>>(
         deviceGraph, cliqueData, bufTails, glBuffers, globalCount, glBufferSize,
         graph.n, level, k, totalCliques);
     cudaDeviceSynchronize();
