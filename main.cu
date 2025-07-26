@@ -403,10 +403,13 @@ void cliqueCoreDecompose(const Graph &graph, deviceGraphPointers &deviceGraph,
     chkerr(cudaMemcpy(&newCount, globalCount, sizeof(unsigned int),
                       cudaMemcpyDeviceToHost));
 
+    // Update cumulative count with vertices processed in this level
+    count += newCount;  // Add this level's processed vertices to cumulative total
+
     // CRITICAL FIX: Calculate density BEFORE incrementing level
     // After removing vertices with core value 'level', the remaining graph
     // represents the (level+1)-core
-    ui remainingVertices = graph.n - newCount;
+    ui remainingVertices = graph.n - count;  // Use cumulative count
     
     if (remainingVertices > 0) {
       // Count remaining active cliques
@@ -416,8 +419,8 @@ void cliqueCoreDecompose(const Graph &graph, deviceGraphPointers &deviceGraph,
       currentDensity = static_cast<double>(currentCliques) / remainingVertices;
       
       if (DEBUG) {
-        printf("After Level=%u: Vertices=%u, Cliques=%u, Density=%.6f\n", 
-               level, remainingVertices, currentCliques, currentDensity);
+        printf("After Level=%u: NewCount=%u, TotalCount=%u, Vertices=%u, Cliques=%u, Density=%.6f\n", 
+               level, newCount, count, remainingVertices, currentCliques, currentDensity);
       }
       
       // CRITICAL FIX: The remaining graph represents (level+1)-core
@@ -437,7 +440,6 @@ void cliqueCoreDecompose(const Graph &graph, deviceGraphPointers &deviceGraph,
       break;
     }
     
-    count = newCount;
     level++;  // Increment level AFTER density calculation
   }
 
